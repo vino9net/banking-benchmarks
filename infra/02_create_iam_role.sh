@@ -11,6 +11,10 @@
 #     only way a load generator on the bench VM can query it.
 #   - cloudformation:DescribeStacks on that one stack — both seed_from_redis.py and
 #     query_appsync.py resolve the table name / API URL this way by default.
+#   - kinesis:PutRecords on account-inquiry's "transfers" stream — core-sim-relay's only
+#     Kinesis call (core-sim/src/core_sim/relay.py) is put_records(); the sim VM needs
+#     this to publish transfers at all. Found missing by actually running the relay
+#     against a live stream — it fails with AccessDeniedException without it.
 #
 # Idempotent: safe to re-run.
 set -euo pipefail
@@ -30,9 +34,14 @@ api_id="$(awsc appsync list-graphql-apis \
 account_id="$(awsc sts get-caller-identity --query Account --output text)"
 api_arn="arn:aws:appsync:${AWS_REGION}:${account_id}:apis/${api_id}"
 
+stream_name="$(awsc cloudformation describe-stacks --stack-name "$ACCOUNT_INQUIRY_STACK" \
+    --query "Stacks[0].Outputs[?OutputKey=='TransfersStreamName'].OutputValue" --output text)"
+stream_arn="arn:aws:kinesis:${AWS_REGION}:${account_id}:stream/${stream_name}"
+
 info "table: $table_arn"
 info "appsync api: $api_arn"
 info "stack: $stack_arn"
+info "kinesis stream: $stream_arn"
 
 trust_policy=$(cat <<'JSON'
 {
@@ -77,6 +86,12 @@ policy_doc=$(cat <<JSON
       "Effect": "Allow",
       "Action": "cloudformation:DescribeStacks",
       "Resource": "${stack_arn}"
+    },
+    {
+      "Sid": "PublishTransfers",
+      "Effect": "Allow",
+      "Action": "kinesis:PutRecords",
+      "Resource": "${stream_arn}"
     }
   ]
 }

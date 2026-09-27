@@ -124,3 +124,8 @@ instance_public_ip() {
     awsc ec2 describe-instances --instance-ids "$1" \
         --query 'Reservations[0].Instances[0].PublicIpAddress' --output text
 }
+
+instance_private_ip() {
+    awsc ec2 describe-instances --instance-ids "$1" \
+        --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text
+}

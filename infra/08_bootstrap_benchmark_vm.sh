@@ -38,7 +38,8 @@ REMOTE
     rm -f /tmp/bb-clone.err
 fi
 
-core_sim_ip="$(state_get CORE_SIM_PUBLIC_IP)"
+core_sim_private_ip="$(state_get CORE_SIM_PRIVATE_IP)"
+core_sim_public_ip="$(state_get CORE_SIM_PUBLIC_IP)"
 appsync_url="$(awsc cloudformation describe-stacks --stack-name "$ACCOUNT_INQUIRY_STACK" \
     --query "Stacks[0].Outputs[?OutputKey=='AccountInquiryApiUrl'].OutputValue" --output text 2>/dev/null || true)"
 
@@ -47,9 +48,18 @@ cat <<EOF
 benchmark VM ready: $ip
   redis-cli, node, k6, tmux, git installed. banking-benchmarks cloned to ~/banking-benchmarks.
 
-  core-sim HTTP API : http://${core_sim_ip:-<unset>}:${CORE_SIM_PORT}
+  For Redis specifically, use core-sim's PRIVATE IP from this VM, not its public one —
+  confirmed against a real run that \`redis-cli -h ${core_sim_public_ip:-<unset>}\` from
+  here hangs, while \`redis-cli -h ${core_sim_private_ip:-<unset>}\` works immediately.
+  core-sim's HTTP API (port 8000) works fine via either IP from here — the difference is
+  that Redis's security-group rule is a *self-reference* (allow from this same security
+  group), and AWS only matches that kind of rule against an instance's private IP, never
+  its public one, even from another member of the same group.
+
+  core-sim HTTP API : http://${core_sim_private_ip:-<unset>}:${CORE_SIM_PORT}   (from this VM; also works via the public IP)
+                       http://${core_sim_public_ip:-<unset>}:${CORE_SIM_PORT}   (from outside the VPC)
   AppSync GraphQL    : ${appsync_url:-<run: aws cloudformation describe-stacks --stack-name $ACCOUNT_INQUIRY_STACK>}
-  Redis (SG-internal): ${core_sim_ip:-<unset>}:6379   # redis-cli -h <that ip> ping
+  Redis (SG-internal): redis-cli -h ${core_sim_private_ip:-<unset>} ping   (must be the private IP)
 
 Both VMs share IAM role ${IAM_ROLE_NAME} — AppSync queries from this VM authenticate via
 that role's instance credentials automatically (SigV4), no separate credentials needed.

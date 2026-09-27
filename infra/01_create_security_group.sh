@@ -41,6 +41,20 @@ awsc ec2 authorize-security-group-ingress --group-id "$sg_id" \
     --ip-permissions "IpProtocol=tcp,FromPort=${CORE_SIM_PORT},ToPort=${CORE_SIM_PORT},IpRanges=[{CidrIp=0.0.0.0/0,Description=core-sim-http}]" \
     >/dev/null 2>&1 || true
 
+# --- bench VM's k6 dashboard: nginx reverse-proxies :80/:443 to k6's own web
+# --- dashboard (see cloud-init/benchmark.sh) so you can check a running benchmark's
+# --- status from a browser. Public on purpose, same tradeoff as core-sim's HTTP port
+# --- above — but unlike that port, this one is gated by HTTP Basic Auth at the nginx
+# --- layer (credentials set interactively in 08_bootstrap_benchmark_vm.sh), since the
+# --- dashboard itself has no auth of its own.
+info "authorizing HTTP/HTTPS (80/443) from 0.0.0.0/0 for the bench VM's k6 dashboard"
+awsc ec2 authorize-security-group-ingress --group-id "$sg_id" \
+    --ip-permissions "IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges=[{CidrIp=0.0.0.0/0,Description=k6-dashboard-http}]" \
+    >/dev/null 2>&1 || true
+awsc ec2 authorize-security-group-ingress --group-id "$sg_id" \
+    --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0,Description=k6-dashboard-https}]" \
+    >/dev/null 2>&1 || true
+
 # --- Redis: NEVER public — it has no auth, and an internet-facing Redis with 10M+
 # --- accounts sitting in it is a real incident, not a hypothetical one. Only other
 # --- members of this same security group (i.e. the bench VM, for ad hoc redis-cli use)

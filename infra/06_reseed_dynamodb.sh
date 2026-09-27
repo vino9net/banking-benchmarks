@@ -46,7 +46,7 @@ cat <<EOF
 DynamoDB now matches Redis. To let new transfers flow all the way to DynamoDB, start
 publishing on the relay (attach: ssh ${SSH_USER}@${ip} tmux attach -t core-sim, window "relay"):
 
-    KINESIS_STREAM=transfers ~/.local/bin/uv run core-sim-relay
+    AWS_DEFAULT_REGION=${AWS_REGION} KINESIS_STREAM=transfers ~/.local/bin/uv run core-sim-relay
 
 Next: infra/07_launch_benchmark_vm.sh
 EOF

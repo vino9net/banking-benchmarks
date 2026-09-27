@@ -20,7 +20,7 @@ info "installing core-sim dependencies on $ip (uv sync)"
 ssh_run "$ip" 'cd ~/core-sim && ~/.local/bin/uv sync --all-extras'
 
 info "starting core-sim (app + relay) in tmux on $ip"
-ssh_run "$ip" bash -s <<'REMOTE'
+ssh_run "$ip" bash -s <<REMOTE
 set -euo pipefail
 cd ~/core-sim
 tmux has-session -t core-sim 2>/dev/null && tmux kill-session -t core-sim
@@ -31,7 +31,10 @@ tmux new-window -t core-sim -n relay
 # only turned on once account-inquiry's DynamoDB table has been (re)seeded from Redis
 # (06_reseed_dynamodb.sh), so early transfers don't race a table that doesn't have
 # those accounts in it yet. Attach and re-run with KINESIS_STREAM=transfers when ready.
-tmux send-keys -t core-sim:relay 'echo "run: KINESIS_STREAM=transfers ~/.local/bin/uv run core-sim-relay"' C-m
+# AWS_DEFAULT_REGION is required explicitly — confirmed live that boto3 does not
+# resolve region from EC2 instance metadata by default in this environment, and
+# core-sim-relay's put_records() call fails with NoRegionError without it.
+tmux send-keys -t core-sim:relay 'echo "run: AWS_DEFAULT_REGION=${AWS_REGION} KINESIS_STREAM=transfers ~/.local/bin/uv run core-sim-relay"' C-m
 REMOTE
 
 sleep 2

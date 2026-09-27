@@ -71,10 +71,9 @@ export AWS_PROFILE AWS_REGION
 : "${CORE_SIM_PORT:=8000}"
 
 # How many accounts to seed into core-sim's Redis (05_seed_accounts.sh), in thousands —
-# e.g. 100 = 100,000 accounts. Default kept small (100K, not the 10M the task sizes the
-# VM for) so a first run is fast to iterate on; bump it via .env or the shell for a
-# real benchmark run.
-: "${SEED_ACCOUNTS_K:=100}"
+# e.g. 10000 = 10,000,000 accounts, matching the scale the sim VM is sized for. Override
+# via .env or the shell for a smaller/faster iteration run.
+: "${SEED_ACCOUNTS_K:=10000}"
 
 CORE_SIM_REPO_URL="https://github.com/vino9net/core-sim.git"      # public
 ACCOUNT_INQUIRY_REPO_URL="https://github.com/vino9net/account-inquiry.git"  # public

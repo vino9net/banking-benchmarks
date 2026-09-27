@@ -12,8 +12,9 @@ source ./config.sh
 ip="$(state_get CORE_SIM_PUBLIC_IP)"
 [ -n "$ip" ] || die "no CORE_SIM_PUBLIC_IP in state — run 03_launch_core_sim_vm.sh first"
 
-# SEED_ACCOUNTS_K is in thousands (config.sh, default 100 = 100,000 accounts) — override
-# via .env or `SEED_ACCOUNTS_K=10000 infra/05_seed_accounts.sh` for a real 10M-account run.
+# SEED_ACCOUNTS_K is in thousands (config.sh, default 10000 = 10,000,000 accounts) —
+# override via .env or `SEED_ACCOUNTS_K=100 infra/05_seed_accounts.sh` for a fast,
+# small-scale iteration run instead.
 [[ "$SEED_ACCOUNTS_K" =~ ^[0-9]+$ ]] || die "SEED_ACCOUNTS_K is not a number: $SEED_ACCOUNTS_K"
 n_accounts=$((SEED_ACCOUNTS_K * 1000))
 opening_balance=100000000   # 1,000,000.00 in minor units — matches core-sim's own docs/README example

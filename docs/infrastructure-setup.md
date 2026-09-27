@@ -127,9 +127,10 @@ named `core-sim` with two windows:
 infra/05_seed_accounts.sh
 ```
 
-Seeds `SEED_ACCOUNTS_K` thousand accounts (`config.sh`, **default 100** = 100,000
-accounts — deliberately small so a first run is fast to iterate on; override via `.env`
-or `SEED_ACCOUNTS_K=10000 infra/05_seed_accounts.sh` for a real 10M-account run). There
+Seeds `SEED_ACCOUNTS_K` thousand accounts (`config.sh`, **default 10000** = 10,000,000
+accounts, matching the scale the sim VM is sized for; override via `.env` or
+`SEED_ACCOUNTS_K=100 infra/05_seed_accounts.sh` for a fast, small-scale iteration run
+instead). There
 is no separate seeding script in `core-sim` — the seeding logic *is* `POST /admin/seed`
 (`core_sim.engines.redis_lua.RedisLuaEngine.seed()`, pipelined in chunks of 5,000 HSETs)
 — so this script just calls that endpoint on the sim VM's public IP with a generous
@@ -167,10 +168,13 @@ provision), but a full scan-delete-then-batch-write of millions of rows still ta
 real wall-clock time — expect minutes, not seconds, at 10M accounts. The script prompts
 for confirmation before wiping.
 
-After this, the console output tells you the command to start publishing on the
-relay (`KINESIS_STREAM=transfers uv run core-sim-relay`, in the sim VM's `core-sim:relay`
-tmux window) — do this once you're ready for transfers to actually flow through to
-DynamoDB, not before.
+After this, the console output tells you the command to start publishing on the relay
+(`AWS_DEFAULT_REGION=us-west-2 KINESIS_STREAM=transfers uv run core-sim-relay`, in the
+sim VM's `core-sim:relay` tmux window) — do this once you're ready for transfers to
+actually flow through to DynamoDB, not before. `AWS_DEFAULT_REGION` is required
+explicitly: confirmed live that boto3 doesn't resolve region from EC2 instance metadata
+by default here, so `core-sim-relay`'s `put_records()` call fails with `NoRegionError`
+without it.
 
 ## Step 7 — launch the bench VM
 

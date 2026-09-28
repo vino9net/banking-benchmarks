@@ -46,7 +46,7 @@
       "width": 24,
       "height": 6,
       "properties": {
-        "title": "Approx Ingestion Backlog (committed - ingested, cumulative over visible window)",
+        "title": "Approx Ingestion Backlog (committed - ingested, cumulative over visible window — only correct if the window starts before the run did; see IteratorAge below otherwise)",
         "view": "timeSeries",
         "stacked": false,
         "region": "us-west-2",
@@ -55,6 +55,23 @@
           ["DynamoDBIngestionBench", "TransfersCommitted", { "id": "m1", "stat": "Sum", "period": 60, "visible": false }],
           [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"TransferApplied\"', 'Sum', 60)", "id": "m2", "visible": false }],
           [{ "expression": "RUNNING_SUM(m1) - RUNNING_SUM(m2)", "label": "approx backlog", "id": "e3" }]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 18,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "title": "Ingest Lambda Consumer Lag — IteratorAge (robust: a point-in-time reading, not a sum, so it's correct regardless of the selected time range)",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-west-2",
+        "period": 60,
+        "metrics": [
+          ["AWS/Lambda", "IteratorAge", "FunctionName", "AccountInquiryStack-staging-ingest", { "stat": "Maximum", "label": "max IteratorAge (ms)" }]
         ]
       }
     }

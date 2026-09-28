@@ -203,3 +203,41 @@ Reaching for `infra/teardown.sh` instead of steps 2-3 is for permanently decommi
 the rig, not for pausing it between runs — it also deletes the security group and IAM
 role, so the next run starts from `infra/01_create_security_group.sh` again instead of
 resuming.
+
+## Reading CloudWatch numbers correctly — a pitfall that produced a false alarm
+
+Checking "how much has actually landed in DynamoDB so far" during a live 2000 tps run,
+an ad hoc `GetMetricData`/`SEARCH()` query against `AccountInquiry/TransferApplied` with a
+short relative window (`StartTime = now - 60min`, `now - 40min`, etc.) undercounted the
+true total by ~300-400K — enough to look exactly like a stalled, stuck consumer with a
+huge unprocessed backlog. It wasn't: re-running the same query with `StartTime` set safely
+*before the run itself started* (90 min back, not 40) accounted for 1,793,018 of the
+1,800,001 transfers written, with the ~7K gap fully explained by
+`AccountInquiry/TransferAlreadyApplied` (the relay's at-least-once redelivery, correctly
+deduped). The pipeline had drained completely; the "backlog" was a query bug, not a real one.
+
+**The mistake, generalized**: `GetMetricData`/`SEARCH()` results are strictly clipped to
+`[StartTime, EndTime]` — data published before `StartTime` isn't a zero, it's just absent
+from the returned series, and a `Sum` over that series will silently exclude it. There's no
+warning; the query just returns a smaller-than-true number that looks exactly like missing
+or stuck data. This is *the same underlying gotcha* the dashboard's "Approx Ingestion
+Backlog" widget already warns about in its own title (`RUNNING_SUM` is cumulative *over
+whatever time range the CloudWatch console has selected* — pick a range that starts before
+the run began, or the number is meaningless) — it just bit an ad hoc script version of the
+same query instead of the dashboard.
+
+**How to avoid it**:
+- When computing a "total so far" number for a still-running or just-finished benchmark,
+  always set `StartTime` with generous margin before the run's actual start — never a
+  short relative window ("last 40 min") chosen without checking how long the run has
+  actually been going.
+- Prefer `AWS/Lambda`'s `IteratorAge` metric (dimensioned by `FunctionName`, `Stat=Maximum`)
+  for "is the consumer keeping up" questions instead of recomputing cumulative sums. It's a
+  point-in-time reading of how stale the oldest unprocessed record is — immune to this
+  class of windowing mistake entirely, which is exactly why it's on the dashboard as its
+  own widget now, not just the `RUNNING_SUM` one.
+- Before concluding a pipeline is "stuck" from a metrics gap, check for a mundane
+  explanation first: `AccountInquiry/TransferAlreadyApplied` (deduped redeliveries),
+  the ingest Lambda's own recent log stream (a clean `REPORT` line with no errors is
+  strong evidence it's actually caught up and correctly idle, not stalled), and the
+  `IngestDlq` queue depth (should be 0 unless something is genuinely failing repeatedly).

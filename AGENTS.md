@@ -144,3 +144,62 @@ top-level directory, per the project's convention.
   AWS credentials) are always prompted for interactively and passed over an
   already-encrypted channel (SSH) — never written into a script, a cloud-init file, or
   committed to this repo.
+
+## Tearing down between runs, to save cost
+
+A benchmark run here is occasional, not continuous — most of the time this rig should be
+torn down, not left running. Of everything it creates, only two things actually cost
+money while idle: the two EC2 instances (per-hour compute + attached EBS) and the
+Kinesis stream (per-shard-hour billing regardless of traffic — see
+`../account-inquiry/AGENTS.md`'s "Kinesis costs while idle"). Everything else costs
+nothing to leave alone:
+
+- **DynamoDB** — `TableV2` on-demand billing means zero cost with zero requests, so
+  there's no need to empty it just to save money. It's still worth emptying before
+  tearing down (see below), but that's for a clean start next time, not for cost.
+- **The CloudWatch dashboard** (`DynamoDBIngestionBench`) — CloudWatch's free tier
+  covers the first 3 custom dashboards per account per month; this account has 2
+  (`DynamoDBIngestionBench` plus the pre-existing `vinobank`), so it's costing nothing.
+  Leave it — only reconsider if a 4th dashboard shows up somewhere and pushes the
+  account over the free-tier count (then it's $3/dashboard/month).
+- **The security group and IAM role/instance profile** (`infra/01_create_security_group.sh`,
+  `infra/02_create_iam_role.sh`) — plain AWS resources with no idle charge. Keep them
+  around between runs; `infra/03_launch_core_sim_vm.sh` and `07_launch_benchmark_vm.sh`
+  reuse them from `infra/.state/env` instead of recreating them, which is the whole
+  reason resuming is fast.
+
+**Order** (do DynamoDB before terminating anything — the wipe below runs from the
+core-sim VM the same way `infra/06_reseed_dynamodb.sh` does, so it needs that VM, and
+its SSH access, to still exist):
+
+1. **Wipe DynamoDB.** account-inquiry's `scripts/seed_from_redis.py --wipe-only` empties
+   the table and stops — no Redis read, no reseed. Run it the same way
+   `06_reseed_dynamodb.sh` runs the full reseed, just with the extra flag:
+   ```
+   ssh "$SSH_USER@$(state_get CORE_SIM_PUBLIC_IP)" \
+     "cd ~/account-inquiry && AWS_DEFAULT_REGION='$AWS_REGION' ~/.local/bin/uv run python \
+      scripts/seed_from_redis.py --stack-name '$ACCOUNT_INQUIRY_STACK' --wipe-only --yes"
+   ```
+   (If you'd rather run it from your own machine instead of over SSH, it needs no VM at
+   all — `--wipe-only` never touches Redis, only DynamoDB via your AWS credentials — in
+   which case this step's ordering relative to VM termination stops mattering.)
+
+2. **Terminate the two EC2 instances.** Do this directly (not `infra/teardown.sh` — that
+   also deletes the security group and IAM role/instance profile, which cost nothing to
+   keep and are what make the next resume fast):
+   ```
+   aws ec2 terminate-instances --instance-ids "$(state_get CORE_SIM_INSTANCE_ID)" "$(state_get BENCHMARK_INSTANCE_ID)"
+   ```
+   Redis dies with the core-sim instance (`appendonly no`, `save ""` — see "Key facts"
+   above); that's expected, not a problem, since accounts get reseeded from
+   `05_seed_accounts.sh`'s account-generation logic next time, not from a Redis snapshot.
+
+3. **Delete the Kinesis stream.** `RemovalPolicy.RETAIN` on account-inquiry's stream
+   means nothing here or in `cdk destroy` ever removes it automatically — see
+   `../account-inquiry/AGENTS.md`'s "Kinesis costs while idle" for the command and why
+   not to just `create-stream` it back by hand next time (let `cdk deploy` do that).
+
+Reaching for `infra/teardown.sh` instead of steps 2-3 is for permanently decommissioning
+the rig, not for pausing it between runs — it also deletes the security group and IAM
+role, so the next run starts from `infra/01_create_security_group.sh` again instead of
+resuming.

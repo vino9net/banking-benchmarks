@@ -12,6 +12,21 @@ Both numbers are derived from the *event* timestamps k6 attaches to each sample 
 when core-sim actually completed each request), not from wall-clock polling time, so
 they're accurate even if this script starts late or stalls briefly.
 
+Unless --no-cloudwatch is passed, each report also publishes the number of transfers
+committed *since the last report* as a CloudWatch Count metric (fixed namespace
+DynamoDBIngestionBench, metric TransfersCommitted — this script has exactly one job, so
+neither is configurable) — the same Count-per-event shape as the ingest Lambda's own
+TransferApplied metric (see ddb_ingestion_metrics.py), so a CloudWatch dashboard can
+graph Sum(TransfersCommitted)/period next to Sum(TransferApplied)/period as one
+write-vs-ingest TPS comparison. Publishing failures (missing permissions, network,
+whatever) are caught and only printed as a warning — this script's only real job is
+tailing k6's output correctly, and a CloudWatch hiccup must never take that down.
+
+AWS identity/region come entirely from the environment (AWS_PROFILE, AWS_REGION /
+AWS_DEFAULT_REGION, or the bench VM's own instance role) — same convention as every
+other AWS-touching command in this repo. Region needs to be set explicitly somewhere:
+this repo already found boto3 does not auto-detect it from EC2 instance metadata.
+
 Usage:
     uv run python core_sim_tps.py --metrics-file k6-metrics.ndjson [--csv-out core_sim_tps.csv]
 """
@@ -27,7 +42,11 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+import boto3
+
 METRIC_NAME = "transfers_committed"
+CLOUDWATCH_NAMESPACE = "DynamoDBIngestionBench"
+CLOUDWATCH_METRIC_NAME = "TransfersCommitted"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--window-seconds", type=float, default=60.0, help="trailing TPS window")
     p.add_argument("--report-interval", type=float, default=5.0, help="seconds between printed snapshots")
     p.add_argument("--csv-out", help="optional path to also append snapshots as CSV")
+    p.add_argument("--no-cloudwatch", action="store_true", help="don't publish to CloudWatch at all")
     return p.parse_args()
 
 
@@ -57,12 +77,49 @@ def follow(path: str):
             yield line
 
 
+def _cloudwatch_client(args: argparse.Namespace):
+    if args.no_cloudwatch:
+        return None
+    try:
+        # No explicit profile/region: boto3 already resolves both from the environment
+        # (AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION) or, on the bench VM, from the
+        # instance's IAM role automatically — the same convention every other
+        # AWS-touching command in this repo relies on (e.g. core-sim-relay). Region
+        # does need to be set explicitly *somewhere* in the environment though: this
+        # repo already found boto3 does not auto-detect it from EC2 instance metadata.
+        return boto3.client("cloudwatch")
+    except Exception as exc:  # noqa: BLE001 - never let a CloudWatch problem take the tailer down
+        print(f"[core-sim-tps] warning: could not create CloudWatch client, publishing disabled: {exc}", file=sys.stderr)
+        return None
+
+
+def _publish(cw, ts: float, delta: int) -> None:
+    if cw is None or delta <= 0:
+        return
+    try:
+        cw.put_metric_data(
+            Namespace=CLOUDWATCH_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": CLOUDWATCH_METRIC_NAME,
+                    "Timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
+                    "Value": float(delta),
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 - a publish failure must never stop the tailer
+        print(f"[core-sim-tps] warning: failed to publish to CloudWatch: {exc}", file=sys.stderr)
+
+
 def main() -> None:
     args = parse_args()
+    cw = _cloudwatch_client(args)
 
     window: deque[float] = deque()
     start_time: float | None = None
     total = 0
+    last_published_total = 0
     last_report = 0.0
 
     csv_writer = None
@@ -118,6 +175,9 @@ def main() -> None:
             if csv_writer and csv_file:
                 csv_writer.writerow([f"{elapsed:.1f}", total, f"{tps_since_launch:.2f}", f"{tps_window:.2f}"])
                 csv_file.flush()
+
+            _publish(cw, ts, total - last_published_total)
+            last_published_total = total
     except KeyboardInterrupt:
         pass
     finally:

@@ -38,25 +38,6 @@ REMOTE
     rm -f /tmp/bb-clone.err
 fi
 
-# cloud-init locked the nginx reverse proxy in front of k6's web dashboard behind a
-# random password nobody was ever told (see cloud-init/benchmark.sh) — replace it with
-# one you actually have, now, interactively. Secrets are always set this way in this
-# repo, never baked into cloud-init (AGENTS.md), and never passed as a command-line
-# arg here either (visible via `ps` on the VM to any other local user) — piped over
-# stdin, through the already-encrypted SSH channel, to `htpasswd -i` instead.
-: "${DASHBOARD_USER:=admin}"
-[[ "$DASHBOARD_USER" =~ ^[A-Za-z0-9_-]+$ ]] || die "DASHBOARD_USER must be alphanumeric/-/_ (got: ${DASHBOARD_USER})"
-: "${DASHBOARD_PASSWORD:=}"
-if [ -z "$DASHBOARD_PASSWORD" ]; then
-    read -rsp "Password for the k6 dashboard (user '${DASHBOARD_USER}'), or blank to generate one: " DASHBOARD_PASSWORD
-    echo
-fi
-if [ -z "$DASHBOARD_PASSWORD" ]; then
-    DASHBOARD_PASSWORD="$(openssl rand -base64 18)"
-    info "generated a dashboard password (shown below, not stored anywhere else — save it now)"
-fi
-printf '%s\n' "$DASHBOARD_PASSWORD" | ssh_run "$ip" "sudo htpasswd -Bic /etc/nginx/k6-dashboard.htpasswd '${DASHBOARD_USER}' && sudo systemctl reload nginx"
-
 core_sim_private_ip="$(state_get CORE_SIM_PRIVATE_IP)"
 core_sim_public_ip="$(state_get CORE_SIM_PUBLIC_IP)"
 appsync_url="$(awsc cloudformation describe-stacks --stack-name "$ACCOUNT_INQUIRY_STACK" \
@@ -79,12 +60,6 @@ benchmark VM ready: $ip
                        http://${core_sim_public_ip:-<unset>}:${CORE_SIM_PORT}   (from outside the VPC)
   AppSync GraphQL    : ${appsync_url:-<run: aws cloudformation describe-stacks --stack-name $ACCOUNT_INQUIRY_STACK>}
   Redis (SG-internal): redis-cli -h ${core_sim_private_ip:-<unset>} ping   (must be the private IP)
-
-  k6 dashboard       : http://${ip}/   or   https://${ip}/  (self-signed cert — expect a
-                       browser warning, this VM has no DNS name to get a real one for)
-                       user '${DASHBOARD_USER}', password: ${DASHBOARD_PASSWORD}
-                       Only shows anything while a run has K6_WEB_DASHBOARD=true set
-                       (see dynamodb-ingestion/README.md) — 502 between runs is expected.
 
 Both VMs share IAM role ${IAM_ROLE_NAME} — AppSync queries from this VM authenticate via
 that role's instance credentials automatically (SigV4), no separate credentials needed.

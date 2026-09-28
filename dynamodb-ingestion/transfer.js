@@ -14,7 +14,9 @@
 //
 //   k6 run -e RATE=500 -e DISTRIBUTION=uniform  -e N_ACCOUNTS=10000000 transfer.js
 //   k6 run -e RATE=500 -e DISTRIBUTION=gaussian -e GAUSSIAN_STDDEV=50000 transfer.js
-//   K6_WEB_DASHBOARD=true k6 run -e RATE=500 transfer.js   # live dashboard, see README
+//
+// Run core_sim_tps.py alongside this (tailing --out json=<file>) to get write-side TPS
+// printed locally and published to CloudWatch — see README.md.
 
 import http from "k6/http";
 import { check } from "k6";

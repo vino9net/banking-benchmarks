@@ -37,8 +37,13 @@ so "last minute" here means "the most recent minute CloudWatch has fully reporte
 literally the last 60 wall-clock seconds — each report prints that bucket's own
 timestamp so the lag is visible rather than hidden.
 
+AWS identity/region come entirely from the environment (AWS_PROFILE, AWS_REGION /
+AWS_DEFAULT_REGION, or the bench VM's own instance role) — same convention as every
+other AWS-touching command in this repo. Region needs to be set explicitly somewhere:
+this repo already found boto3 does not auto-detect it from EC2 instance metadata.
+
 Usage:
-    uv run python ddb_ingestion_metrics.py [--region us-west-2] [--csv-out ddb_ingestion.csv]
+    uv run python ddb_ingestion_metrics.py [--csv-out ddb_ingestion.csv]
 """
 
 from __future__ import annotations
@@ -59,8 +64,6 @@ LATENCY_METRIC = "IngestionLatencyMs"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--region", default=os.environ.get("AWS_REGION"), help="AWS region (else boto3 default chain)")
-    p.add_argument("--profile", default=os.environ.get("AWS_PROFILE"), help="AWS profile (else boto3 default chain)")
     p.add_argument("--report-interval", type=float, default=60.0, help="seconds between polls (CloudWatch is 60s-granular)")
     p.add_argument("--recent-lookback-minutes", type=int, default=6, help="how far back to look for the latest complete minute")
     p.add_argument("--csv-out", help="optional path to also append snapshots as CSV")
@@ -75,9 +78,11 @@ def _search_query(qid: str, metric: str, stat: str, period: int) -> dict:
     }
 
 
-def _client(args: argparse.Namespace):
-    session = boto3.Session(profile_name=args.profile, region_name=args.region)
-    return session.client("cloudwatch")
+def _client():
+    # No explicit profile/region: boto3 resolves both from the environment
+    # (AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION) or the bench VM's instance role —
+    # same convention as every other AWS-touching command in this repo.
+    return boto3.client("cloudwatch")
 
 
 def _latest_complete_minute(cw, lookback_minutes: int) -> tuple[datetime | None, float, float, float, float]:
@@ -127,6 +132,12 @@ def _since_launch(cw, launch: datetime) -> tuple[float, float, float, float, flo
     elapsed = max((now - launch).total_seconds(), 60.0)
     period = int(-(-elapsed // 60) * 60)  # round up to a multiple of 60
 
+    # EndTime is launch+period, not "now": guarantees a window at least `period` wide
+    # (period is always >= 60s) regardless of how little wall-clock time has actually
+    # elapsed — on the very first poll, `now` can be a few milliseconds after `launch`,
+    # and GetMetricData rejects StartTime == EndTime at its own rounding.
+    end = launch + timedelta(seconds=period)
+
     resp = cw.get_metric_data(
         MetricDataQueries=[
             _search_query("tps", COUNT_METRIC, "Sum", period),
@@ -135,7 +146,7 @@ def _since_launch(cw, launch: datetime) -> tuple[float, float, float, float, flo
             _search_query("p99", LATENCY_METRIC, "p99", period),
         ],
         StartTime=launch,
-        EndTime=now,
+        EndTime=end,
         ScanBy="TimestampAscending",
     )
     by_id = {r["Id"]: r for r in resp["MetricDataResults"]}
@@ -151,7 +162,7 @@ def _since_launch(cw, launch: datetime) -> tuple[float, float, float, float, flo
 
 def main() -> None:
     args = parse_args()
-    cw = _client(args)
+    cw = _client()
     launch = datetime.now(timezone.utc)
 
     csv_writer = None

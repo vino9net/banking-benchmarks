@@ -189,18 +189,12 @@ and `node`, not memory.
 
 `user-data` (`infra/cloud-init/benchmark.sh`) installs `redis-tools` (`redis-cli`),
 `nodejs`/`npm`, `k6` (from k6's own apt repo — not in Debian's main repo), `tmux`, `git`,
-and `uv`. It also installs `nginx` and configures it to reverse-proxy `:80`/`:443` to
-k6's own web dashboard (`127.0.0.1:5665`, only listening while a run has
-`K6_WEB_DASHBOARD=true` set — see `dynamodb-ingestion/README.md`), so a running
-benchmark's status is checkable from a browser instead of an SSH tunnel. `:443` uses
-Debian's snakeoil self-signed cert (`ssl-cert` package) since this VM has no DNS name —
-expect a browser warning, that's expected, not a misconfiguration. The proxy is locked
-behind HTTP Basic Auth from first boot, with a random password nobody is told; Step 8
-below replaces it with one you actually have.
+and `uv`.
 
-`01_create_security_group.sh` opens `80`/`443` to `0.0.0.0/0` for this — same public
-tradeoff as core-sim's HTTP port, mitigated by that Basic Auth gate since the dashboard
-itself has none of its own.
+Benchmark status is checked via CloudWatch (each benchmark publishes its own TPS/delay
+metrics there — see `dynamodb-ingestion/README.md`), not a browser-facing dashboard on
+this VM, so nothing here opens `80`/`443` — only SSH (`22`) and core-sim's HTTP port are
+public, per `01_create_security_group.sh`.
 
 ## Step 8 — bootstrap the bench VM
 
@@ -219,12 +213,6 @@ already reach without extra credentials:
   authenticates via the instance role's credentials automatically; there is no API key.
 - `redis-cli -h <sim-vm-ip> ping` — reachable because both VMs share the security group,
   not because Redis is public.
-
-It also prompts interactively for the k6 dashboard's Basic Auth password (or generates
-one, printed once at the end) and installs it on the bench VM over SSH, replacing
-cloud-init's random placeholder — set `DASHBOARD_USER`/`DASHBOARD_PASSWORD` beforehand
-to skip the prompt. The final summary includes the resulting dashboard URL and
-credentials.
 
 **Infrastructure setup ends here.** Individual benchmarks — k6 scripts, node-based
 AppSync load generators, result logs — live in their own directories at the repo root,

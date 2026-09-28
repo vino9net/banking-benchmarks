@@ -6,15 +6,15 @@ Measures the pipeline in AGENTS.md's "System under test" end to end:
 k6 (this dir) ──HTTP /transfer──► core-sim ──Redis/Kinesis/relay──► ingest Lambda ──► DynamoDB
 ```
 
-Three independent things are measured, each read from wherever it's cheapest and most
-accurate to read it from — nothing here scans DynamoDB or adds new instrumentation to
-either sibling repo:
+Two things are measured, each read from wherever it's cheapest and most accurate to
+read it from — nothing here scans DynamoDB or adds new instrumentation to either
+sibling repo — and both end up in CloudWatch, so a single dashboard can show write rate
+and ingestion rate/delay side by side without needing k6's own web dashboard at all:
 
-| what | source | script |
-|---|---|---|
-| core-sim write TPS (last-minute + since-launch) | k6's own streamed metrics | `core_sim_tps.py` |
-| DynamoDB ingestion TPS + P50/P95/P99 delay (last-minute + since-launch) + approx. running transaction count | the ingest Lambda's existing CloudWatch metrics | `ddb_ingestion_metrics.py` |
-| live view of the load generator | k6's built-in web dashboard | `transfer.js` (via `K6_WEB_DASHBOARD=true`) |
+| what | source | script | published to CloudWatch as |
+|---|---|---|---|
+| core-sim write TPS (last-minute + since-launch, printed locally) | k6's own streamed metrics | `core_sim_tps.py` | `DynamoDBIngestionBench` / `TransfersCommitted` (Count) |
+| DynamoDB ingestion TPS + P50/P95/P99 delay (last-minute + since-launch) + approx. running transaction count | the ingest Lambda's existing CloudWatch metrics | `ddb_ingestion_metrics.py` | reads `AccountInquiry` / `TransferApplied`, `IngestionLatencyMs` (already published by the Lambda itself) |
 
 ## Why these sources, not something else
 
@@ -28,7 +28,13 @@ either sibling repo:
   summed over a period.
 - **core-sim TPS** comes from k6 itself, since core-sim's own `/transfer` response
   already carries everything needed (success/failure, and its own `created_at`) — no
-  reason to look anywhere else for the write side.
+  reason to look anywhere else for the write side. `core_sim_tps.py` also publishes the
+  count of transfers committed since its last report to CloudWatch as a plain Count
+  metric (same shape as the Lambda's own `TransferApplied`), so both TPS curves can sit
+  on one CloudWatch dashboard graphed the same way (`Sum(metric)/period`). Publishing is
+  best-effort: a failure (bad credentials, throttling, network) is caught and printed as
+  a warning, never allowed to interrupt the tailer — pass `--no-cloudwatch` to disable
+  it outright.
 - **Approx. running transaction count**, for correlating "more transactions in flight"
   against "higher delay": a real `Select=COUNT` scan or `DescribeTable.ItemCount` was
   explicitly ruled out (see the docstring in `ddb_ingestion_metrics.py`) — both are
@@ -64,6 +70,11 @@ Requires `k6` and `uv` (both already installed on the bench VM by
 cd dynamodb-ingestion
 uv sync   # once, installs boto3 for the two reporter scripts
 
+# Both reporter scripts resolve AWS identity/region from the environment (AWS_PROFILE,
+# AWS_REGION/AWS_DEFAULT_REGION, or the bench VM's own instance role) — set these
+# beforehand if they're not already, e.g.:
+#   export AWS_DEFAULT_REGION=us-west-2   # boto3 does not auto-detect this from EC2 metadata
+
 # 0. Bracket the run — conservation check before (per AGENTS.md, non-negotiable).
 #    /admin/seed (run once beforehand via infra/05_seed_accounts.sh) already printed
 #    the expected_total to compare against; or just call conservation with no args now
@@ -73,16 +84,16 @@ curl -s "$BASE/admin/conservation"
 # 1. DynamoDB ingestion TPS / delay / approx. transaction count (start this first —
 #    it takes 1-3 min before CloudWatch has anything to report, so starting early
 #    means useful numbers are ready close to when the load actually ramps up).
-uv run python ddb_ingestion_metrics.py --region us-west-2 --csv-out results/ddb_ingestion.csv
+uv run python ddb_ingestion_metrics.py --csv-out results/ddb_ingestion.csv
 
-# 2. core-sim write TPS — reads the file k6 is about to write, in real time.
+# 2. core-sim write TPS — reads the file k6 is about to write, in real time, and
+#    publishes it to CloudWatch (namespace DynamoDBIngestionBench) alongside it.
 #    Start this before or right after k6; it just waits for the file to appear.
-uv run python core_sim_tps.py --metrics-file results/k6-metrics.ndjson --csv-out results/core_sim_tps.csv
+uv run python core_sim_tps.py --metrics-file results/k6-metrics.ndjson \
+  --csv-out results/core_sim_tps.csv
 
-# 3. The load itself. K6_WEB_DASHBOARD=true serves a live dashboard on :5665
-#    (throughput/latency/status-code charts) for as long as k6 is running.
-K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=results/k6-report.html \
-  k6 run -e BASE="$BASE" -e N_ACCOUNTS=10000000 -e RATE=500 -e DISTRIBUTION=uniform \
+# 3. The load itself.
+k6 run -e BASE="$BASE" -e N_ACCOUNTS=10000000 -e RATE=500 -e DISTRIBUTION=uniform \
     --out json=results/k6-metrics.ndjson transfer.js
 
 # 4. Conservation check after — compare against step 0's total.
@@ -93,23 +104,17 @@ Stop the two Python reporters (Ctrl-C) once k6 finishes and CloudWatch has caugh
 (a minute or two of drain time — the ingest Lambda is still processing the queue's
 tail after the last request completes).
 
-### Reaching the k6 dashboard from your laptop
+### Viewing it
 
-The bench VM runs nginx, reverse-proxying `:80`/`:443` to k6's dashboard on
-`127.0.0.1:5665` (see `infra/cloud-init/benchmark.sh`), so once a run is going with
-`K6_WEB_DASHBOARD=true` set, just open `http://<benchmark-vm-public-ip>/` (or `https://`
-— self-signed cert, expect a browser warning) and log in with the credentials
-`infra/08_bootstrap_benchmark_vm.sh` printed when the VM was bootstrapped. A 502 means
-no run is currently active, not a misconfiguration.
-
-If you'd rather not expose it at all, an SSH tunnel still works as an alternative:
-
-```bash
-ssh -L 5665:localhost:5665 admin@<benchmark-vm-public-ip>
-```
-
-then open `http://localhost:5665` locally. `K6_WEB_DASHBOARD_EXPORT` also saves a
-static HTML report you can open after the fact, through either path.
+Everything ends up in CloudWatch — `DynamoDBIngestionBench` / `TransfersCommitted`
+(published by `core_sim_tps.py`) and `AccountInquiry` / `TransferApplied` +
+`IngestionLatencyMs` (already published by the ingest Lambda, just read by
+`ddb_ingestion_metrics.py`) — so a CloudWatch dashboard graphing `Sum(metric)/period`
+for the first two next to the P50/P95/P99 of the third is the natural way to watch a
+run, live or after the fact, from any browser with console access — no VM-hosted
+dashboard, reverse proxy, or SSH tunnel needed. (No such dashboard exists yet as of this
+writing; the two reporter scripts' own stdout/CSV output is the only view until one is
+built.)
 
 ## Correlating transaction count against delay
 

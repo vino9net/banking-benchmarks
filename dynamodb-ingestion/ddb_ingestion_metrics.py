@@ -53,7 +53,7 @@ import csv
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import boto3
 
@@ -64,8 +64,18 @@ LATENCY_METRIC = "IngestionLatencyMs"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--report-interval", type=float, default=60.0, help="seconds between polls (CloudWatch is 60s-granular)")
-    p.add_argument("--recent-lookback-minutes", type=int, default=6, help="how far back to look for the latest complete minute")
+    p.add_argument(
+        "--report-interval",
+        type=float,
+        default=60.0,
+        help="seconds between polls (CloudWatch is 60s-granular)",
+    )
+    p.add_argument(
+        "--recent-lookback-minutes",
+        type=int,
+        default=6,
+        help="how far back to look for the latest complete minute",
+    )
     p.add_argument("--csv-out", help="optional path to also append snapshots as CSV")
     return p.parse_args()
 
@@ -73,7 +83,10 @@ def parse_args() -> argparse.Namespace:
 def _search_query(qid: str, metric: str, stat: str, period: int) -> dict:
     return {
         "Id": qid,
-        "Expression": f"SEARCH('Namespace=\"{NAMESPACE}\" MetricName=\"{metric}\"', '{stat}', {period})",
+        "Expression": (
+            f'SEARCH(\'Namespace="{NAMESPACE}" MetricName="{metric}"\', '
+            f"'{stat}', {period})"
+        ),
         "ReturnData": True,
     }
 
@@ -85,11 +98,13 @@ def _client():
     return boto3.client("cloudwatch")
 
 
-def _latest_complete_minute(cw, lookback_minutes: int) -> tuple[datetime | None, float, float, float, float]:
+def _latest_complete_minute(
+    cw, lookback_minutes: int
+) -> tuple[datetime | None, float, float, float, float]:
     """Returns (bucket_start, tps, p50, p95, p99) for the most recent 60s bucket that
     CloudWatch has data for, within the lookback window. bucket_start is None (and the
     rest 0.0) if nothing has landed yet."""
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(minutes=lookback_minutes)
     resp = cw.get_metric_data(
         MetricDataQueries=[
@@ -113,7 +128,9 @@ def _latest_complete_minute(cw, lookback_minutes: int) -> tuple[datetime | None,
 
     def _value_at(series_id: str) -> float:
         series = by_id.get(series_id, {})
-        for ts, val in zip(series.get("Timestamps", []), series.get("Values", [])):
+        timestamps = series.get("Timestamps", [])
+        values = series.get("Values", [])
+        for ts, val in zip(timestamps, values, strict=True):
             if ts == bucket:
                 return val
         return 0.0
@@ -128,7 +145,7 @@ def _since_launch(cw, launch: datetime) -> tuple[float, float, float, float, flo
     returns a single bucket spanning the whole run — real percentiles computed by
     CloudWatch over that entire window, not an average-of-per-minute-percentiles
     (which would not be mathematically valid)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     elapsed = max((now - launch).total_seconds(), 60.0)
     period = int(-(-elapsed // 60) * 60)  # round up to a multiple of 60
 
@@ -163,7 +180,7 @@ def _since_launch(cw, launch: datetime) -> tuple[float, float, float, float, flo
 def main() -> None:
     args = parse_args()
     cw = _client()
-    launch = datetime.now(timezone.utc)
+    launch = datetime.now(UTC)
 
     csv_writer = None
     csv_file = None
@@ -205,17 +222,22 @@ def main() -> None:
             print(
                 f"[ddb] elapsed={elapsed:7.1f}s  approx_total={total:9.0f}  "
                 f"tps_since_launch={tps_since_launch:7.1f}  "
-                f"delay(since launch) p50={p50_all:7.1f}ms p95={p95_all:7.1f}ms p99={p99_all:7.1f}ms"
+                f"delay(since launch) p50={p50_all:7.1f}ms "
+                f"p95={p95_all:7.1f}ms p99={p99_all:7.1f}ms"
             )
             if bucket is not None:
-                lag_s = (datetime.now(timezone.utc) - bucket).total_seconds()
+                lag_s = (datetime.now(UTC) - bucket).total_seconds()
                 print(
                     f"      last complete minute @ {bucket.isoformat()} "
                     f"({lag_s:5.0f}s ago)  tps={tps_last:7.1f}  "
-                    f"delay p50={p50_last:7.1f}ms p95={p95_last:7.1f}ms p99={p99_last:7.1f}ms"
+                    f"delay p50={p50_last:7.1f}ms p95={p95_last:7.1f}ms "
+                    f"p99={p99_last:7.1f}ms"
                 )
             else:
-                print("      no data landed in CloudWatch yet (expect 1-3min lag on the first report)")
+                print(
+                    "      no data landed in CloudWatch yet "
+                    "(expect 1-3min lag on the first report)"
+                )
 
             if csv_writer and csv_file:
                 csv_writer.writerow(

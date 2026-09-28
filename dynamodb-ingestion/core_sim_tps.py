@@ -28,7 +28,8 @@ other AWS-touching command in this repo. Region needs to be set explicitly somew
 this repo already found boto3 does not auto-detect it from EC2 instance metadata.
 
 Usage:
-    uv run python core_sim_tps.py --metrics-file k6-metrics.ndjson [--csv-out core_sim_tps.csv]
+    uv run python core_sim_tps.py --metrics-file k6-metrics.ndjson \
+        [--csv-out core_sim_tps.csv]
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ import os
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import boto3
 
@@ -54,21 +55,28 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--metrics-file", required=True, help="path to k6's --out json= file")
     p.add_argument("--metric-name", default=METRIC_NAME, help="k6 Counter metric to track")
     p.add_argument("--window-seconds", type=float, default=60.0, help="trailing TPS window")
-    p.add_argument("--report-interval", type=float, default=5.0, help="seconds between printed snapshots")
+    p.add_argument(
+        "--report-interval",
+        type=float,
+        default=5.0,
+        help="seconds between printed snapshots",
+    )
     p.add_argument("--csv-out", help="optional path to also append snapshots as CSV")
-    p.add_argument("--no-cloudwatch", action="store_true", help="don't publish to CloudWatch at all")
+    p.add_argument(
+        "--no-cloudwatch", action="store_true", help="don't publish to CloudWatch at all"
+    )
     return p.parse_args()
 
 
 def _parse_time(s: str) -> float:
     # k6's JSON output uses RFC3339 with a trailing "Z".
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(UTC).timestamp()
 
 
 def follow(path: str):
     while not os.path.exists(path):
         time.sleep(0.2)
-    with open(path, "r") as f:
+    with open(path) as f:
         while True:
             line = f.readline()
             if not line:
@@ -89,7 +97,11 @@ def _cloudwatch_client(args: argparse.Namespace):
         # repo already found boto3 does not auto-detect it from EC2 instance metadata.
         return boto3.client("cloudwatch")
     except Exception as exc:  # noqa: BLE001 - never let a CloudWatch problem take the tailer down
-        print(f"[core-sim-tps] warning: could not create CloudWatch client, publishing disabled: {exc}", file=sys.stderr)
+        print(
+            f"[core-sim-tps] warning: could not create CloudWatch client, "
+            f"publishing disabled: {exc}",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -102,14 +114,17 @@ def _publish(cw, ts: float, delta: int) -> None:
             MetricData=[
                 {
                     "MetricName": CLOUDWATCH_METRIC_NAME,
-                    "Timestamp": datetime.fromtimestamp(ts, tz=timezone.utc),
+                    "Timestamp": datetime.fromtimestamp(ts, tz=UTC),
                     "Value": float(delta),
                     "Unit": "Count",
                 }
             ],
         )
     except Exception as exc:  # noqa: BLE001 - a publish failure must never stop the tailer
-        print(f"[core-sim-tps] warning: failed to publish to CloudWatch: {exc}", file=sys.stderr)
+        print(
+            f"[core-sim-tps] warning: failed to publish to CloudWatch: {exc}",
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
@@ -130,10 +145,18 @@ def main() -> None:
         csv_writer = csv.writer(csv_file)
         if is_new:
             csv_writer.writerow(
-                ["elapsed_s", "cumulative_count", "tps_since_launch", f"tps_last_{int(args.window_seconds)}s"]
+                [
+                    "elapsed_s",
+                    "cumulative_count",
+                    "tps_since_launch",
+                    f"tps_last_{int(args.window_seconds)}s",
+                ]
             )
 
-    print(f"[core-sim-tps] watching {args.metrics_file!r} for metric {args.metric_name!r}", file=sys.stderr)
+    print(
+        f"[core-sim-tps] watching {args.metrics_file!r} for metric {args.metric_name!r}",
+        file=sys.stderr,
+    )
 
     try:
         for line in follow(args.metrics_file):
@@ -165,7 +188,9 @@ def main() -> None:
 
             elapsed = ts - start_time
             tps_since_launch = total / elapsed if elapsed > 0 else 0.0
-            tps_window = len(window) / min(args.window_seconds, elapsed) if elapsed > 0 else 0.0
+            tps_window = (
+                len(window) / min(args.window_seconds, elapsed) if elapsed > 0 else 0.0
+            )
 
             print(
                 f"[core-sim] elapsed={elapsed:7.1f}s  count={total:9d}  "
@@ -173,7 +198,14 @@ def main() -> None:
                 f"tps_last_{int(args.window_seconds)}s={tps_window:8.1f}"
             )
             if csv_writer and csv_file:
-                csv_writer.writerow([f"{elapsed:.1f}", total, f"{tps_since_launch:.2f}", f"{tps_window:.2f}"])
+                csv_writer.writerow(
+                    [
+                        f"{elapsed:.1f}",
+                        total,
+                        f"{tps_since_launch:.2f}",
+                        f"{tps_window:.2f}",
+                    ]
+                )
                 csv_file.flush()
 
             _publish(cw, ts, total - last_published_total)

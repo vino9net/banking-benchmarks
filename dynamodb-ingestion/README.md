@@ -16,6 +16,9 @@ and ingestion rate/delay side by side without needing k6's own web dashboard at 
 | core-sim write TPS (last-minute + since-launch, printed locally) | k6's own streamed metrics | `core_sim_tps.py` | `DynamoDBIngestionBench` / `TransfersCommitted` (Count) |
 | DynamoDB ingestion TPS + P50/P95/P99 delay (last-minute + since-launch) + approx. running transaction count | the ingest Lambda's existing CloudWatch metrics | `ddb_ingestion_metrics.py` | reads `AccountInquiry` / `TransferApplied`, `IngestionLatencyMs` (already published by the Lambda itself) |
 
+See `MONITORING.md` for exactly which component publishes what, when, and a real
+caveat worth knowing about the ingest Lambda's metrics not being benchmark-scoped.
+
 ## Why these sources, not something else
 
 - **Delay** = `updated_at - processed_at`, where `processed_at` is core-sim's own
@@ -112,9 +115,25 @@ Everything ends up in CloudWatch — `DynamoDBIngestionBench` / `TransfersCommit
 `ddb_ingestion_metrics.py`) — so a CloudWatch dashboard graphing `Sum(metric)/period`
 for the first two next to the P50/P95/P99 of the third is the natural way to watch a
 run, live or after the fact, from any browser with console access — no VM-hosted
-dashboard, reverse proxy, or SSH tunnel needed. (No such dashboard exists yet as of this
-writing; the two reporter scripts' own stdout/CSV output is the only view until one is
-built.)
+dashboard, reverse proxy, or SSH tunnel needed.
+
+`cloudwatch-dashboard.json` is a ready-to-import dashboard body with exactly that: a
+write-vs-ingestion TPS graph, a delay (P50/P95/P99) graph, and an approximate-backlog
+graph (`RUNNING_SUM` of committed minus ingested, over whatever time range the dashboard
+is viewing). Import or update it with:
+
+```bash
+aws cloudwatch put-dashboard --region us-west-2 \
+  --dashboard-name DynamoDBIngestionBench \
+  --dashboard-body file://cloudwatch-dashboard.json
+```
+
+`put-dashboard` is an upsert — re-running it after editing the file updates the same
+dashboard in place. The `TransferApplied`/`IngestionLatencyMs` widgets use a `SEARCH()`
+expression rather than a plain metric reference, for the same reason
+`ddb_ingestion_metrics.py` does: it doesn't need to know the exact dimension set
+Powertools attaches to the Lambda's metrics. Every widget hardcodes `"region":
+"us-west-2"` — edit that in the JSON first if importing into a different region.
 
 ## Correlating transaction count against delay
 

@@ -1,0 +1,62 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "title": "Write vs Ingestion TPS",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-west-2",
+        "period": 60,
+        "metrics": [
+          ["DynamoDBIngestionBench", "TransfersCommitted", { "id": "m1", "stat": "Sum", "period": 60, "visible": false }],
+          [{ "expression": "m1/60", "label": "core-sim write TPS", "id": "e1" }],
+          [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"TransferApplied\"', 'Sum', 60)", "id": "m2", "visible": false }],
+          [{ "expression": "m2/60", "label": "DynamoDB ingestion TPS", "id": "e2" }]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "title": "DynamoDB Ingestion Delay (ms)",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-west-2",
+        "period": 60,
+        "metrics": [
+          [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"IngestionLatencyMs\"', 'p50', 60)", "id": "p50", "label": "p50" }],
+          [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"IngestionLatencyMs\"', 'p95', 60)", "id": "p95", "label": "p95" }],
+          [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"IngestionLatencyMs\"', 'p99', 60)", "id": "p99", "label": "p99" }]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "title": "Approx Ingestion Backlog (committed - ingested, cumulative over visible window)",
+        "view": "timeSeries",
+        "stacked": false,
+        "region": "us-west-2",
+        "period": 60,
+        "metrics": [
+          ["DynamoDBIngestionBench", "TransfersCommitted", { "id": "m1", "stat": "Sum", "period": 60, "visible": false }],
+          [{ "expression": "SEARCH('Namespace=\"AccountInquiry\" MetricName=\"TransferApplied\"', 'Sum', 60)", "id": "m2", "visible": false }],
+          [{ "expression": "RUNNING_SUM(m1) - RUNNING_SUM(m2)", "label": "approx backlog", "id": "e3" }]
+        ]
+      }
+    }
+  ]
+}

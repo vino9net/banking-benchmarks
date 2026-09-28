@@ -15,6 +15,11 @@
 #     Kinesis call (core-sim/src/core_sim/relay.py) is put_records(); the sim VM needs
 #     this to publish transfers at all. Found missing by actually running the relay
 #     against a live stream — it fails with AccessDeniedException without it.
+#   - cloudwatch:PutMetricData, scoped by namespace condition rather than Resource
+#     (CloudWatch metrics aren't ARN-addressable, so Resource is always "*" for this
+#     action) — dynamodb-ingestion/core_sim_tps.py needs this from the bench VM to
+#     publish its write-side TPS metric. Also found missing by actually running it on
+#     the VM, not just locally under a broad-permission dev profile.
 #
 # Idempotent: safe to re-run.
 set -euo pipefail
@@ -92,6 +97,15 @@ policy_doc=$(cat <<JSON
       "Effect": "Allow",
       "Action": "kinesis:PutRecords",
       "Resource": "${stream_arn}"
+    },
+    {
+      "Sid": "PublishBenchmarkMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"cloudwatch:namespace": "DynamoDBIngestionBench"}
+      }
     }
   ]
 }
